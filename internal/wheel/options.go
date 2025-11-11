@@ -2,12 +2,6 @@ package wheel
 
 import "time"
 
-type SlotPolicy int
-
-const (
-	SlotPolicyInsertionOrder SlotPolicy = iota
-)
-
 type Option func(*configuration)
 
 type configuration struct {
@@ -15,7 +9,6 @@ type configuration struct {
 	slotCount              uint32
 	maxRounds              uint32
 	deterministicJitterMax uint32
-	slotPolicy             SlotPolicy
 	onExpire               func(Expirable)
 	onReschedule           func(Expirable, time.Duration)
 }
@@ -31,7 +24,6 @@ func defaultConfiguration() configuration {
 		slotCount:              defaultSlotCount,
 		maxRounds:              ^uint32(0),
 		deterministicJitterMax: 0,
-		slotPolicy:             SlotPolicyInsertionOrder,
 	}
 }
 
@@ -78,11 +70,5 @@ func WithRescheduleHook(callback func(Expirable, time.Duration)) Option {
 func WithDeterministicJitterSpan(maximumAdditionalTicks uint32) Option {
 	return func(configurationData *configuration) {
 		configurationData.deterministicJitterMax = maximumAdditionalTicks
-	}
-}
-
-func WithSlotPolicy(policy SlotPolicy) Option {
-	return func(configurationData *configuration) {
-		configurationData.slotPolicy = policy
 	}
 }

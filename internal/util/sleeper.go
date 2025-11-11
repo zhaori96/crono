@@ -24,9 +24,6 @@ func NewExponentialSleeper(startDuration, maximumDuration time.Duration) Exponen
 
 func (s *ExponentialSleeper) Pause() {
 	time.Sleep(s.current)
-	nextDuration := s.current * 2
-	if nextDuration > s.maximum {
-		nextDuration = s.maximum
-	}
+	nextDuration := min(s.current * 2, s.maximum)
 	s.current = nextDuration
 }

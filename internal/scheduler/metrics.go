@@ -7,15 +7,12 @@ import (
 )
 
 type Metrics struct {
-	IdleTimeout       time.Duration
-	ActiveLeases      uint64
-	AcquiredCount     uint64
-	ReleasedCount     uint64
-	ExpiredCount      uint64
-	TimeoutResetCount uint64
-	KeepAliveCount    uint64
-	BufferMetrics     buffer.Metrics
-	WheelMetrics      WheelMetrics
+	IdleTimeout   time.Duration
+	AcquiredCount uint64
+	ReleasedCount uint64
+	ExpiredCount  uint64
+	BufferMetrics buffer.Metrics
+	WheelMetrics  WheelMetrics
 }
 
 type WheelMetrics struct {
@@ -26,7 +23,7 @@ type WheelMetrics struct {
 }
 
 func (s *Scheduler[T]) Metrics() Metrics {
-	bufferMetrics := s.resourceBuffer.Metrics()
+	bufferMetrics := s.buffer.Metrics()
 	wheelMetrics := WheelMetrics{
 		ScheduledCount:   s.timeWheel.ScheduledCount(),
 		ExpiredCount:     s.timeWheel.ExpiredCount(),
@@ -35,14 +32,11 @@ func (s *Scheduler[T]) Metrics() Metrics {
 	}
 
 	return Metrics{
-		IdleTimeout:       s.idleTimeout,
-		ActiveLeases:      s.activeLeases.Load(),
-		AcquiredCount:     s.acquiredCount.Load(),
-		ReleasedCount:     s.releasedCount.Load(),
-		ExpiredCount:      s.expiredCount.Load(),
-		TimeoutResetCount: s.resetCount.Load(),
-		KeepAliveCount:    s.keepAliveCount.Load(),
-		BufferMetrics:     bufferMetrics,
-		WheelMetrics:      wheelMetrics,
+		IdleTimeout:   s.idleTimeout,
+		AcquiredCount: s.acquiredCount.Load(),
+		ReleasedCount: s.releasedCount.Load(),
+		ExpiredCount:  s.expiredCount.Load(),
+		BufferMetrics: bufferMetrics,
+		WheelMetrics:  wheelMetrics,
 	}
 }

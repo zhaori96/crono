@@ -1,17 +1,17 @@
 package buffer
 
 type Metrics struct {
-	Capacity  uint32
-	Occupancy int32
+	Capacity  int
+	Occupancy int
 }
 
-func (m Metrics) Available() uint32 {
+func (m Metrics) Available() int {
 	if m.Occupancy <= 0 {
 		return m.Capacity
 	}
 
-	if remaining := int64(m.Capacity) - int64(m.Occupancy); remaining > 0 {
-		return uint32(remaining)
+	if remaining := m.Capacity - m.Occupancy; remaining > 0 {
+		return remaining
 	}
 
 	return 0

@@ -17,27 +17,53 @@ type strategicBuffer[T any] struct {
 	capacity  uint32
 	allowLock bool
 
-	head        atomic.Uint32
-	tail        atomic.Uint32
-	occupancy   atomic.Int32
-	closed      atomic.Bool
-	fallbackMux sync.Mutex
+	head      atomic.Uint32
+	tail      atomic.Uint32
+	occupancy atomic.Int32
+	closed    atomic.Bool
+	mutex     sync.Mutex
+	working   sync.WaitGroup
 }
 
-func newStrategicBuffer[T any](capacity int, allowLock bool) *strategicBuffer[T] {
-	return &strategicBuffer[T]{
-		items:     make([]T, capacity),
+func newStrategicBuffer[T any](
+	capacity int,
+	allowLock bool,
+	startItems ...T,
+) *strategicBuffer[T] {
+	switch {
+	case capacity <= 0 && len(startItems) == 0:
+		panic("capacity or len of startItems must be greather than zero")
+	case capacity > 0 && capacity < len(startItems):
+		panic("when capacity is greather than zero len of startItems must be less or equal to capacity ")
+	}
+
+	buffer := &strategicBuffer[T]{
 		capacity:  uint32(capacity),
 		allowLock: allowLock,
 	}
+
+	if capacity <= 0 {
+		buffer.items = startItems
+		buffer.capacity = uint32(len(startItems))
+		buffer.occupancy.Store(int32(len(buffer.items)))
+		return buffer
+	}
+
+	buffer.items = make([]T, capacity)
+	copy(buffer.items, startItems)
+	buffer.occupancy.Store(int32(len(buffer.items)))
+
+	return buffer
 }
 
 func (b *strategicBuffer[T]) Get() (T, error) {
 	var zero T
-
 	if b.closed.Load() && b.occupancy.Load() == 0 {
 		return zero, ErrBufferClosed
 	}
+
+	b.working.Add(1)
+	defer b.working.Done()
 
 	if !b.acquireAvailable() {
 		if b.closed.Load() {
@@ -53,10 +79,6 @@ func (b *strategicBuffer[T]) Get() (T, error) {
 }
 
 func (b *strategicBuffer[T]) Put(item T) error {
-	return b.enqueue(item)
-}
-
-func (b *strategicBuffer[T]) Release(item T) error {
 	err := b.enqueue(item)
 	if errors.Is(err, ErrBufferFull) {
 		return ErrReuseMismatch
@@ -68,11 +90,18 @@ func (b *strategicBuffer[T]) Closed() bool {
 	return b.closed.Load()
 }
 
+func (b *strategicBuffer[T]) Occupancy() int {
+	return int(b.occupancy.Load())
+}
+
+func (b *strategicBuffer[T]) Capacity() int {
+	return int(b.capacity)
+}
+
 func (b *strategicBuffer[T]) Metrics() Metrics {
-	occupancy := b.occupancy.Load()
 	return Metrics{
-		Capacity:  b.capacity,
-		Occupancy: occupancy,
+		Capacity:  int(b.capacity),
+		Occupancy: int(b.occupancy.Load()),
 	}
 }
 
@@ -88,18 +117,7 @@ func (b *strategicBuffer[T]) Close() {
 		return
 	}
 
-	const maxWaitAttempts = 64
-	sleeper := util.NewExponentialSleeper(20*time.Microsecond, time.Millisecond)
-	for attempt := 0; attempt < maxWaitAttempts; attempt++ {
-		if b.occupancy.Load() == 0 {
-			break
-		}
-		sleeper.Pause()
-	}
-
-	b.fallbackMux.Lock()
-	defer b.fallbackMux.Unlock()
-
+	b.working.Wait()
 	b.occupancy.Store(0)
 
 	var zero T
@@ -115,6 +133,9 @@ func (b *strategicBuffer[T]) enqueue(item T) error {
 		return ErrBufferClosed
 	}
 
+	b.working.Add(1)
+	defer b.working.Done()
+
 	if !b.reserveSlot() {
 		if b.closed.Load() {
 			return ErrBufferClosed
@@ -125,7 +146,7 @@ func (b *strategicBuffer[T]) enqueue(item T) error {
 	index, previous := b.advanceHead()
 	if b.closed.Load() {
 		b.rollbackReservation()
-		b.restoreHead(previous, index)
+		b.head.CompareAndSwap(previous, index)
 		return ErrBufferClosed
 	}
 
@@ -149,7 +170,7 @@ func (b *strategicBuffer[T]) reserveSlot() bool {
 	const maxAttempts = 10
 	backoff := util.NewExponentialSleeper(10*time.Microsecond, 500*time.Microsecond)
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		current := b.occupancy.Load()
 		if current == int32(b.capacity) {
 			return false
@@ -162,8 +183,8 @@ func (b *strategicBuffer[T]) reserveSlot() bool {
 		}
 	}
 
-	b.fallbackMux.Lock()
-	defer b.fallbackMux.Unlock()
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
 
 	current := b.occupancy.Load()
 	if current == int32(b.capacity) {
@@ -189,7 +210,7 @@ func (b *strategicBuffer[T]) acquireAvailable() bool {
 	const maxAttempts = 10
 	backoff := util.NewExponentialSleeper(10*time.Microsecond, 500*time.Microsecond)
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		current := b.occupancy.Load()
 		if current == 0 {
 			return false
@@ -202,8 +223,8 @@ func (b *strategicBuffer[T]) acquireAvailable() bool {
 		}
 	}
 
-	b.fallbackMux.Lock()
-	defer b.fallbackMux.Unlock()
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
 
 	current := b.occupancy.Load()
 	if current == 0 {
@@ -231,7 +252,7 @@ func (b *strategicBuffer[T]) advanceHead() (uint32, uint32) {
 	const maxAttempts = 10
 	backoff := util.NewExponentialSleeper(10*time.Microsecond, 500*time.Microsecond)
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		current := b.head.Load()
 		next := (current + 1) % b.capacity
 		if b.head.CompareAndSwap(current, next) {
@@ -242,8 +263,8 @@ func (b *strategicBuffer[T]) advanceHead() (uint32, uint32) {
 		}
 	}
 
-	b.fallbackMux.Lock()
-	defer b.fallbackMux.Unlock()
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
 
 	current := b.head.Load()
 	next := (current + 1) % b.capacity
@@ -265,7 +286,7 @@ func (b *strategicBuffer[T]) advanceTail() uint32 {
 	const maxAttempts = 10
 	backoff := util.NewExponentialSleeper(10*time.Microsecond, 500*time.Microsecond)
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		current := b.tail.Load()
 		next := (current + 1) % b.capacity
 		if b.tail.CompareAndSwap(current, next) {
@@ -276,24 +297,11 @@ func (b *strategicBuffer[T]) advanceTail() uint32 {
 		}
 	}
 
-	b.fallbackMux.Lock()
-	defer b.fallbackMux.Unlock()
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
 
 	current := b.tail.Load()
 	next := (current + 1) % b.capacity
 	b.tail.Store(next)
 	return next
-}
-
-func (b *strategicBuffer[T]) restoreHead(previous uint32, current uint32) {
-	if b.allowLock {
-		b.fallbackMux.Lock()
-		defer b.fallbackMux.Unlock()
-		if b.head.Load() == current {
-			b.head.Store(previous)
-		}
-		return
-	}
-
-	b.head.CompareAndSwap(current, previous)
 }

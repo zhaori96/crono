@@ -24,13 +24,32 @@ type synchronousBuffer[T any] struct {
 	notFull  *sync.Cond
 }
 
-func newSynchronousBuffer[T any](capacity int) *synchronousBuffer[T] {
+func newSynchronousBuffer[T any](
+	capacity int,
+	startItems ...T,
+) *synchronousBuffer[T] {
+	switch {
+	case capacity <= 0 && len(startItems) == 0:
+		panic("capacity or len of startItems must be greather than zero")
+	case capacity > 0 && capacity < len(startItems):
+		panic("when capacity is greather than zero len of startItems must be less or equal to capacity ")
+	}
+
 	buffer := &synchronousBuffer[T]{
 		items:    make([]T, capacity),
 		capacity: capacity,
 	}
 	buffer.notEmpty = sync.NewCond(&buffer.mutex)
 	buffer.notFull = sync.NewCond(&buffer.mutex)
+
+	if capacity <= 0 {
+		buffer.items = startItems
+		return buffer
+	}
+
+	buffer.items = make([]T, capacity)
+	copy(buffer.items, startItems)
+
 	return buffer
 }
 
@@ -58,10 +77,6 @@ func (b *synchronousBuffer[T]) Put(item T) error {
 	return b.enqueue(item)
 }
 
-func (b *synchronousBuffer[T]) Release(item T) error {
-	return b.enqueue(item)
-}
-
 func (b *synchronousBuffer[T]) Closed() bool {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
@@ -73,8 +88,8 @@ func (b *synchronousBuffer[T]) Metrics() Metrics {
 	defer b.mutex.Unlock()
 
 	return Metrics{
-		Capacity:  uint32(b.capacity),
-		Occupancy: int32(b.count),
+		Capacity:  b.capacity,
+		Occupancy: b.count,
 	}
 }
 
